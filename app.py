@@ -107,14 +107,17 @@ def api_add_product():
 
         keyword = data.get("keyword", "").strip()
         target_price = data.get("target_price")
+        source = data.get("source", "mercari").strip()
 
         if not keyword:
             return jsonify({"error": "关键词不能为空"}), 400
         if not target_price or int(target_price) <= 0:
             return jsonify({"error": "目标价格必须大于0"}), 400
+        if source not in ("mercari", "digimart"):
+            return jsonify({"error": "平台必须是 mercari 或 digimart"}), 400
 
-        product_id = add_product(keyword, int(target_price))
-        logger.info(f"添加监控: [{product_id}] {keyword} 目标价: ¥{target_price}")
+        product_id = add_product(keyword, int(target_price), source)
+        logger.info(f"添加监控: [{product_id}] [{source}] {keyword} 目标价: ¥{target_price}")
 
         return jsonify({"id": product_id, "message": "添加成功"}), 201
     except Exception as e:

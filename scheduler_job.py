@@ -7,10 +7,19 @@ from datetime import datetime
 
 from models import get_all_products, add_price_record, has_been_notified, mark_notified
 from scraper import search_mercari
+from digimart_scraper import search_digimart
 from notifier import send_price_alert
 from config import get_effective_sendkey, load_config
 
 logger = logging.getLogger(__name__)
+
+
+def _search_source(source, keyword, max_results, proxy):
+    """根据source选择合适的爬虫"""
+    if source == 'digimart':
+        return search_digimart(keyword, max_results, proxy)
+    else:
+        return search_mercari(keyword, max_results, proxy)
 
 
 def check_all_active_products():
@@ -44,11 +53,12 @@ def check_all_active_products():
         pid = product["id"]
         keyword = product["keyword"]
         target_price = product["target_price"]
+        source = product.get("source", "mercari")
 
-        logger.info(f"  [{pid}] 搜索: {keyword}")
+        logger.info(f"  [{pid}] 搜索[{source}]: {keyword}")
 
         try:
-            items = search_mercari(keyword, max_results, proxy)
+            items = _search_source(source, keyword, max_results, proxy)
         except Exception as e:
             logger.error(f"  [{pid}] 搜索失败: {e}")
             continue
@@ -111,7 +121,8 @@ def check_single_product(product_id):
     max_results = config.get("max_results_per_search", 10)
     proxy = config.get("proxy", "") or None
 
-    items = search_mercari(product["keyword"], max_results, proxy)
+    source = product.get("source", "mercari")
+    items = _search_source(source, product["keyword"], max_results, proxy)
 
     found = 0
     alerts = 0

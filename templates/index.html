@@ -68,6 +68,8 @@ tr:hover td { background: #fafafa; }
 }
 .badge-active { background: #dcfce7; color: #16a34a; }
 .badge-paused { background: #f3f4f6; color: #9ca3af; }
+.badge-source-mc { background: #e8f0fe; color: #2563eb; }
+.badge-source-dm { background: #fef3c7; color: #d97706; }
 
 /* ── 价格颜色 ── */
 .price-low { color: #16a34a; font-weight: 600; }
@@ -159,14 +161,21 @@ tr:hover td { background: #fafafa; }
   <div class="card">
     <div class="add-form">
       <div class="form-group">
+        <label>🛒 平台</label>
+        <select id="addSource" style="padding:10px 14px;border:2px solid #e0e0e0;border-radius:8px;font-size:14px;min-width:120px;">
+          <option value="mercari">Mercari (煤炉)</option>
+          <option value="digimart">DigiMart (乐器)</option>
+        </select>
+      </div>
+      <div class="form-group">
         <label>🔍 搜索关键词</label>
         <input type="text" id="addKeyword" placeholder="例如: PS5 本体"
-               style="min-width: 280px;">
+               style="min-width: 200px;">
       </div>
       <div class="form-group">
         <label>🎯 目标价格 (日元 JPY)</label>
         <input type="number" id="addPrice" placeholder="例如: 50000" value=""
-               style="min-width: 150px;">
+               style="min-width: 130px;">
       </div>
       <button class="btn btn-primary" onclick="addProduct()" id="btnAdd">
         ➕ 添加监控
@@ -309,7 +318,7 @@ function renderProducts(products) {
 
   let html = `<table>
     <thead><tr>
-      <th>关键词</th><th>目标价格</th><th>当前最低价</th><th>状态</th><th>操作</th>
+      <th>平台</th><th>关键词</th><th>目标价格</th><th>当前最低价</th><th>状态</th><th>操作</th>
     </tr></thead><tbody>`;
 
   products.forEach(p => {
@@ -328,7 +337,12 @@ function renderProducts(products) {
       priceHtml = '<span class="price-none">暂无数据</span>';
     }
 
+    const sourceBadge = p.source === 'digimart'
+      ? '<span class="badge badge-source-dm">DigiMart</span>'
+      : '<span class="badge badge-source-mc">Mercari</span>';
+
     html += `<tr>
+      <td>${sourceBadge}</td>
       <td><strong>${escHtml(p.keyword)}</strong></td>
       <td>${formatPrice(p.target_price)}</td>
       <td>${priceHtml}</td>
@@ -341,7 +355,7 @@ function renderProducts(products) {
       </td>
     </tr>
     <tr id="detailRow${p.id}" style="display:none;">
-      <td colspan="5" style="padding:0;">
+      <td colspan="6" style="padding:0;">
         <div class="detail-panel active" id="detailPanel${p.id}">
           <div class="loading" id="detailLoading${p.id}">加载中...</div>
         </div>
@@ -363,6 +377,7 @@ function escHtml(str) {
 async function addProduct() {
   const keyword = $('#addKeyword').value.trim();
   const price = $('#addPrice').value.trim();
+  const source = $('#addSource').value;
 
   if (!keyword) { showToast('请输入搜索关键词', 'error'); return; }
   if (!price || parseInt(price) <= 0) { showToast('请输入有效的目标价格', 'error'); return; }
@@ -375,7 +390,7 @@ async function addProduct() {
     const data = await API('/api/products', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ keyword, target_price: parseInt(price) }),
+      body: JSON.stringify({ keyword, target_price: parseInt(price), source }),
     });
     if (data.error) {
       showToast(data.error, 'error');

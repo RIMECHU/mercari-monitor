@@ -25,10 +25,17 @@ def init_db():
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
             keyword       TEXT    NOT NULL,
             target_price  INTEGER NOT NULL,
+            source        TEXT    NOT NULL DEFAULT 'mercari',
             created_at    TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
             active        INTEGER NOT NULL DEFAULT 1
         )
     ''')
+
+    # 为旧表添加 source 列 (向前兼容)
+    try:
+        cursor.execute("ALTER TABLE products ADD COLUMN source TEXT NOT NULL DEFAULT 'mercari'")
+    except:
+        pass
 
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS price_history (

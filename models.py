@@ -6,13 +6,13 @@ from db import get_db
 
 # ── 商品(product)操作 ──
 
-def add_product(keyword, target_price):
+def add_product(keyword, target_price, source='mercari'):
     """添加监控商品，返回新ID"""
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO products (keyword, target_price) VALUES (?, ?)",
-        (keyword.strip(), int(target_price))
+        "INSERT INTO products (keyword, target_price, source) VALUES (?, ?, ?)",
+        (keyword.strip(), int(target_price), source)
     )
     conn.commit()
     new_id = cursor.lastrowid
@@ -26,7 +26,7 @@ def get_all_products():
     cursor = conn.cursor()
     cursor.execute('''
         SELECT
-            p.id, p.keyword, p.target_price, p.active, p.created_at,
+            p.id, p.keyword, p.target_price, p.source, p.active, p.created_at,
             (SELECT MAX(scraped_at) FROM price_history WHERE product_id = p.id) AS last_checked_at,
             (SELECT item_price FROM price_history
              WHERE product_id = p.id
