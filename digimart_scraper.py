@@ -16,6 +16,10 @@ def search_digimart(keyword, max_results=10, proxy=None):
     搜索 DigiMart
     返回: list[dict] — [{"item_id", "name", "price", "url", "image_url"}, ...]
     """
+    # 自动补全代理URL的scheme
+    if proxy and "://" not in proxy:
+        proxy = "http://" + proxy
+
     search_url = f"{DIGIMART_BASE}/search"
     params = {"keyword": keyword}
 
