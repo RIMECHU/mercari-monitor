@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 
 from models import get_all_products, add_price_record, has_been_notified, mark_notified
-from scraper import search_mercari
+from scraper import search_mercari, close_shared_browser
 from digimart_scraper import search_digimart
 from notifier import send_price_alert
 from config import get_effective_sendkey, load_config
@@ -114,6 +114,9 @@ def check_all_active_products():
 
         # 商品之间休息3秒，防止被Mercari限流
         time.sleep(3)
+
+    # 关闭共享浏览器释放内存
+    close_shared_browser()
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     logger.info(f"检查完成 ({now}): 找到 {total_found} 个商品, 发送 {total_alerts} 条提醒")

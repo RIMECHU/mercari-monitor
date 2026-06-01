@@ -1,13 +1,58 @@
 """
-Mercari日本 搜索爬虫 — 三级降级策略
+Mercari日本 搜索爬虫 — 三级降级策略，共享浏览器复用
 """
 import logging
 import time
+import threading
+import re as _re
 
 logger = logging.getLogger(__name__)
 
 # 实时汇率缓存
-_usd_to_jpy_rate = 150  # 默认值，首次启动时获取
+_usd_to_jpy_rate = 150
+
+# 共享浏览器实例（同一检查周期内复用，避免每次搜索启动新Chrome）
+_shared_browser = None
+_shared_context = None
+_shared_lock = threading.Lock()
+
+
+def _get_shared_browser():
+    """获取或创建共享浏览器"""
+    global _shared_browser, _shared_context
+    with _shared_lock:
+        if _shared_browser is None:
+            from playwright.sync_api import sync_playwright
+            _pw = sync_playwright().start()
+            args = {
+                "headless": True,
+                "args": [
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage", "--no-sandbox",
+                ],
+            }
+            try:
+                _shared_browser = _pw.chromium.launch(channel="chrome", **args)
+            except Exception:
+                _shared_browser = _pw.chromium.launch(**args)
+            _shared_context = _shared_browser.new_context(
+                locale="ja-JP", timezone_id="Asia/Tokyo",
+                extra_http_headers={"Accept-Language": "ja-JP,ja;q=0.9"},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36",
+            )
+            logger.info("共享浏览器已启动")
+    return _shared_context
+
+
+def close_shared_browser():
+    """关闭共享浏览器"""
+    global _shared_browser, _shared_context
+    with _shared_lock:
+        if _shared_browser:
+            _shared_browser.close()
+            _shared_browser = None
+            _shared_context = None
+            logger.info("共享浏览器已关闭")
 
 
 def _get_usd_jpy_rate():
@@ -15,10 +60,7 @@ def _get_usd_jpy_rate():
     global _usd_to_jpy_rate
     try:
         import httpx as _httpx
-        r = _httpx.get(
-            "https://api.exchangerate-api.com/v4/latest/USD",
-            timeout=5,
-        )
+        r = _httpx.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5)
         if r.status_code == 200:
             _usd_to_jpy_rate = int(r.json()["rates"]["JPY"])
             logger.info(f"实时汇率: 1 USD = {_usd_to_jpy_rate} JPY")
@@ -28,45 +70,36 @@ def _get_usd_jpy_rate():
 
 
 def search_mercari(keyword, max_results=10, proxy=None):
-    """
-    搜索 Mercari 日本站点
-    三级降级: mercapi → mercari库 → 内部API直连
-
-    返回: list[dict] — [{"item_id", "name", "price", "url", "image_url"}, ...]
-    """
-    # 自动补全代理URL的scheme
+    """搜索 Mercari 日本站点。proxy自动补全scheme"""
     if proxy and "://" not in proxy:
         proxy = "http://" + proxy
-
     logger.info(f"搜索关键词: '{keyword}'")
 
-    # Tier 1: mercapi 库（处理DPoP签名）
+    # Tier 1: mercapi
     try:
         return _search_via_mercapi(keyword, max_results, proxy)
     except Exception as e:
         logger.warning(f"Tier 1 (mercapi) 失败: {e}")
 
-    # Tier 2: mercari 库（marvinody版本）
+    # Tier 2: mercari
     try:
         return _search_via_mercari_lib(keyword, max_results, proxy)
     except Exception as e:
         logger.warning(f"Tier 2 (mercari库) 失败: {e}")
 
-    # Tier 3: 直接API请求
+    # Tier 3: Playwright 浏览器（复用共享实例）
     try:
-        return _search_via_api(keyword, max_results, proxy)
+        return _search_via_playwright(keyword, max_results, proxy)
     except Exception as e:
-        logger.warning(f"Tier 3 (API直连) 失败: {e}")
+        logger.warning(f"Tier 3 (Playwright) 失败: {e}")
 
-    logger.error(f"所有搜索策略均失败，关键词: '{keyword}'")
     return []
 
 
 def _search_via_mercapi(keyword, max_results, proxy):
-    """Tier 1: 使用 mercapi 库"""
+    """Tier 1: mercapi 库"""
     from mercapi import Mercapi
     import asyncio
-
     async def _search():
         m = Mercapi()
         results = await m.search(keyword)
@@ -76,22 +109,18 @@ def _search_via_mercapi(keyword, max_results, proxy):
             if count >= max_results:
                 break
             items.append({
-                "item_id": str(item.id),
-                "name": item.name,
-                "price": item.price,
+                "item_id": str(item.id), "name": item.name, "price": item.price,
                 "url": f"https://jp.mercari.com/item/{item.id}",
                 "image_url": item.thumbnails[0] if item.thumbnails else "",
             })
             count += 1
         return items
-
     return asyncio.run(_search())
 
 
 def _search_via_mercari_lib(keyword, max_results, proxy):
-    """Tier 2: 使用 mercari 库 (marvinody/mercari)"""
+    """Tier 2: mercari 库"""
     import mercari
-
     items = []
     count = 0
     for item in mercari.search(keyword):
@@ -109,150 +138,109 @@ def _search_via_mercari_lib(keyword, max_results, proxy):
     return items
 
 
-def _search_via_api(keyword, max_results, proxy):
-    """Tier 3: 使用 Playwright 浏览器渲染 Mercari 搜索页面"""
-    from playwright.sync_api import sync_playwright
-    import re as _re
+def _search_via_playwright(keyword, max_results, proxy):
+    """Tier 3: Playwright 浏览器渲染（复用共享实例）"""
+    search_url = f"https://jp.mercari.com/search?keyword={keyword.replace(' ', '+')}&status=on_sale"
 
-    encoded_keyword = keyword.replace(" ", "+")
-    search_url = f"https://jp.mercari.com/search?keyword={encoded_keyword}&status=on_sale"
-
+    context = _get_shared_browser()
+    if proxy and proxy.startswith("http"):
+        context = context.browser.new_context(
+            locale="ja-JP", timezone_id="Asia/Tokyo",
+            proxy={"server": proxy},
+            extra_http_headers={"Accept-Language": "ja-JP,ja;q=0.9"},
+        )
+    page = context.new_page()
     items = []
-    with sync_playwright() as p:
-        launch_args = {
-            "headless": True,
-            "args": [
-                "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
-                "--no-sandbox",
-            ],
-        }
+
+    try:
+        page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+
+        # 等待骨架屏消失
         try:
-            browser = p.chromium.launch(channel="chrome", **launch_args)
+            page.wait_for_selector("li[data-testid='item-cell-skeleton']", state="detached", timeout=15000)
         except Exception:
-            browser = p.chromium.launch(**launch_args)
+            page.wait_for_timeout(5000)
 
-        context_args = {
-            "locale": "ja-JP",
-            "timezone_id": "Asia/Tokyo",
-            "extra_http_headers": {
-                "Accept-Language": "ja-JP,ja;q=0.9",
-            },
-            "user_agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/126.0.0.0 Safari/537.36"
-            ),
-        }
-        if proxy and "://" not in proxy:
-            proxy = "http://" + proxy
-        if proxy and proxy.startswith("http"):
-            context_args["proxy"] = {"server": proxy}
+        # 提取商品链接
+        html = page.content()
+        links = _re.findall(r'href="(/item/m\d+)"', html)
+        seen_ids = set()
 
-        context = browser.new_context(**context_args)
-        page = context.new_page()
+        for link in links:
+            if len(items) >= max_results:
+                break
 
-        try:
-            page.goto(search_url, wait_until="domcontentloaded", timeout=40000)
+            item_id = link.split("/item/")[-1]
+            if item_id in seen_ids:
+                continue
+            seen_ids.add(item_id)
 
-            # 等待骨架屏消失（搜索API返回数据）
+            full_url = f"https://jp.mercari.com{link}"
+
+            # 提取图片、名称、价格
             try:
-                page.wait_for_selector(
-                    "li[data-testid='item-cell-skeleton']",
-                    state="detached",
-                    timeout=30000,
-                )
-            except Exception:
-                page.wait_for_timeout(10000)
+                name_el = page.query_selector(f"a[href='{link}']")
+                if name_el:
+                    info_json = name_el.evaluate("""el => {
+                        let card = el.closest('li');
+                        if (!card) return '{}';
+                        let img = card.querySelector('img');
+                        let imgSrc = img ? (img.src || '') : '';
+                        let nameEl = card.querySelector('[class*="itemName"]');
+                        let name = nameEl ? nameEl.innerText.trim() : '';
+                        let curEl = card.querySelector('[class*="currency"]');
+                        let numEl = card.querySelector('[class*="number"]');
+                        let currency = curEl ? curEl.innerText.trim() : '';
+                        let number = numEl ? numEl.innerText.trim() : '';
+                        return JSON.stringify({img: imgSrc, name: name, currency: currency, number: number});
+                    }""")
+                    import json as _json
+                    try:
+                        info = _json.loads(info_json)
+                        img_src = info.get("img", "")
+                        name = info.get("name", "")
+                        currency = info.get("currency", "")
+                        number_str = info.get("number", "")
+                    except Exception:
+                        img_src = ""
+                        name = ""
+                        currency = ""
+                        number_str = ""
 
-            # 从渲染后的HTML中提取商品链接
-            html = page.content()
-            links = _re.findall(r'href="(/item/m\d+)"', html)
-            seen_ids = set()
-
-            for link in links:
-                if len(items) >= max_results:
-                    break
-
-                item_id = link.split("/item/")[-1]
-                if item_id in seen_ids:
-                    continue
-                seen_ids.add(item_id)
-
-                full_url = f"https://jp.mercari.com{link}"
-
-                # 从DOM提取图片、名称、价格（精确class选择器）
-                try:
-                    name_el = page.query_selector(f"a[href='{link}']")
-                    if name_el:
-                        info_json = name_el.evaluate("""el => {
-                            let card = el.closest('li');
-                            if (!card) return '{}';
-                            let img = card.querySelector('img');
-                            let imgSrc = img ? (img.src || '') : '';
-                            // 精确class: itemName__ 名称, currency__ 货币, number__ 金额
-                            let nameEl = card.querySelector('[class*="itemName"]');
-                            let name = nameEl ? nameEl.innerText.trim() : '';
-                            let curEl = card.querySelector('[class*="currency"]');
-                            let numEl = card.querySelector('[class*="number"]');
-                            let currency = curEl ? curEl.innerText.trim() : '';
-                            let number = numEl ? numEl.innerText.trim() : '';
-                            return JSON.stringify({img: imgSrc, name: name, currency: currency, number: number});
-                        }""")
-                        import json as _json
+                    price = 0
+                    if number_str:
                         try:
-                            info = _json.loads(info_json)
-                            img_src = info.get("img", "")
-                            name = info.get("name", "")
-                            currency = info.get("currency", "")
-                            number_str = info.get("number", "")
-                        except Exception:
-                            img_src = ""
-                            name = ""
-                            currency = ""
-                            number_str = ""
+                            val = float(number_str.replace(",", ""))
+                            if currency == "US$":
+                                val = int(val * _get_usd_jpy_rate())
+                            elif currency == "HK$":
+                                val = int(val * 20)
+                            elif "." in number_str:
+                                val = int(val * 20)
+                            price = int(val)
+                        except ValueError:
+                            pass
 
-                        # 解析价格：外币按实时汇率换算为日元
-                        price = 0
-                        if number_str:
-                            try:
-                                val = float(number_str.replace(",", ""))
-                                if currency == "US$":
-                                    rate = _get_usd_jpy_rate()
-                                    val = int(val * rate)    # USD→JPY 实时汇率
-                                elif currency == "HK$":
-                                    val = int(val * 20)      # HKD→JPY
-                                elif "." in number_str:
-                                    val = int(val * 20)      # 默认外币换算
-                                price = int(val)
-                            except ValueError:
-                                pass
-
-                        items.append({
-                            "item_id": item_id,
-                            "name": name or f"Mercari {item_id}",
-                            "price": price,
-                            "url": full_url,
-                            "image_url": img_src,
-                        })
-                except Exception:
                     items.append({
-                        "item_id": item_id,
-                        "name": f"Mercari {item_id}",
-                        "price": 0,
-                        "url": full_url,
-                        "image_url": "",
+                        "item_id": item_id, "name": name or f"Mercari {item_id}",
+                        "price": price, "url": full_url, "image_url": img_src,
                     })
+            except Exception:
+                items.append({
+                    "item_id": item_id, "name": f"Mercari {item_id}",
+                    "price": 0, "url": full_url, "image_url": "",
+                })
 
-        except Exception as e:
-            logger.error(f"Playwright搜索出错: {e}")
-
-        browser.close()
+    except Exception as e:
+        logger.error(f"Playwright搜索出错: {e}")
+    finally:
+        page.close()
+        if proxy and proxy.startswith("http"):
+            context.close()
 
     return items
 
 
-# 便捷别名
 def search(keyword, max_results=10, proxy=None):
     """search_mercari 的短别名"""
     return search_mercari(keyword, max_results, proxy)
