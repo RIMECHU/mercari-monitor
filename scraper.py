@@ -104,6 +104,7 @@ def _search_via_api(keyword, max_results, proxy):
             "args": [
                 "--disable-blink-features=AutomationControlled",
                 "--disable-dev-shm-usage",
+                "--no-sandbox",
             ],
         }
         try:
@@ -119,21 +120,23 @@ def _search_via_api(keyword, max_results, proxy):
                 "Chrome/126.0.0.0 Safari/537.36"
             ),
         }
-        if proxy:
+        if proxy and "://" not in proxy:
+            proxy = "http://" + proxy
+        if proxy and proxy.startswith("http"):
             context_args["proxy"] = {"server": proxy}
 
         context = browser.new_context(**context_args)
         page = context.new_page()
 
         try:
-            page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+            page.goto(search_url, wait_until="domcontentloaded", timeout=40000)
 
             # 等待骨架屏消失（搜索API返回数据）
             try:
                 page.wait_for_selector(
                     "li[data-testid='item-cell-skeleton']",
                     state="detached",
-                    timeout=20000,
+                    timeout=30000,
                 )
             except Exception:
                 page.wait_for_timeout(10000)
@@ -154,36 +157,68 @@ def _search_via_api(keyword, max_results, proxy):
 
                 full_url = f"https://jp.mercari.com{link}"
 
-                # 尝试从DOM获取名称和价格
+                # 尝试从DOM获取图片、名称和价格
                 try:
                     name_el = page.query_selector(f"a[href='{link}']")
                     if name_el:
-                        parent_text = name_el.evaluate("""el => {
-                            let p = el.closest('li');
-                            return p ? p.innerText : '';
+                        info_json = name_el.evaluate("""el => {
+                            let card = el.closest('li');
+                            if (!card) return '{}';
+                            let img = card.querySelector('img');
+                            let imgSrc = img ? (img.src || img.getAttribute('data-src') || '') : '';
+                            let priceEl = card.querySelector('[class*="price"]') ||
+                                         card.querySelector('[class*="Price"]') ||
+                                         card.querySelector('[class*="amount"]');
+                            let priceText = priceEl ? priceEl.innerText : '';
+                            if (!priceText) {
+                                let lines = card.innerText.split('\\n');
+                                for (let l of lines) {
+                                    if (l.match(/[¥￥HK$]\\s*[\\d,]+/)) { priceText = l; break; }
+                                }
+                            }
+                            let nameEl = card.querySelector('[class*="title"]') ||
+                                        card.querySelector('[class*="name"]') ||
+                                        card.querySelector('h3, h2');
+                            let name = nameEl ? nameEl.innerText : el.innerText;
+                            return JSON.stringify({img: imgSrc, name: name.trim(), price: priceText.trim()});
                         }""")
-                        lines = [l.strip() for l in parent_text.split("\n") if l.strip()]
-                        # 寻找最长的文本行作为名称（价格行通常较短）
-                        name = ""
+                        import json as _json
+                        try:
+                            info = _json.loads(info_json)
+                            img_src = info.get("img", "")
+                            name = info.get("name", "")
+                            price_text = info.get("price", "")
+                        except Exception:
+                            img_src = ""
+                            name = ""
+                            price_text = ""
+
+                        # 清洗名称：移除前导的货币/价格行 (如 "HK$\n176.49\n")
+                        name = _re.sub(r'^.*[¥￥HK\$\d,\.]+\s*[\d,\.]+\s*', '', name).strip()
+
+                        # 从价格文本中提取数字 (支持 HK$176.49 和 ¥3,490 格式)
                         price = 0
-                        for line in lines:
-                            digit_match = _re.search(r'(\d[\d,]*)', line)
-                            if digit_match and len(line.replace(",", "").replace(" ", "")) < 18:
-                                # 短行+数字 = 价格行
-                                p = int(digit_match.group(1).replace(",", ""))
-                                if p > price and p < 99999999:
-                                    price = p
-                            elif len(line) > len(name) and "\\xa5" not in line:
-                                name = line
+                        if price_text:
+                            digits = _re.findall(r'[\d,]+\.?\d*', price_text.replace(",", ""))
+                            for d in digits:
+                                try:
+                                    val = float(d)
+                                    if val > 1:
+                                        if "HK" in price_text or "HK$" in price_text:
+                                            val = int(val * 20)
+                                        price = int(val)
+                                        break
+                                except ValueError:
+                                    continue
+
                         items.append({
                             "item_id": item_id,
                             "name": name or f"Mercari {item_id}",
                             "price": price,
                             "url": full_url,
-                            "image_url": "",
+                            "image_url": img_src,
                         })
                 except Exception:
-                    # 即使无法获取名称/价格，也添加链接
                     items.append({
                         "item_id": item_id,
                         "name": f"Mercari {item_id}",

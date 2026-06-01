@@ -194,7 +194,7 @@ def api_check_single_product(product_id):
 
         thread = threading.Thread(target=_run)
         thread.start()
-        thread.join(timeout=30)
+        thread.join(timeout=90)
 
         return jsonify({
             "message": f"检查完成: 找到 {result.get('found', 0)} 个商品, 发送 {result.get('alerts', 0)} 条提醒",
