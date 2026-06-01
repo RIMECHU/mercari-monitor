@@ -3,7 +3,6 @@ Mercari日本 搜索爬虫 — 三级降级策略，共享浏览器复用
 """
 import logging
 import time
-import threading
 import re as _re
 
 logger = logging.getLogger(__name__)
@@ -11,48 +10,6 @@ logger = logging.getLogger(__name__)
 # 实时汇率缓存
 _usd_to_jpy_rate = 150
 
-# 共享浏览器实例（同一检查周期内复用，避免每次搜索启动新Chrome）
-_shared_browser = None
-_shared_context = None
-_shared_lock = threading.Lock()
-
-
-def _get_shared_browser():
-    """获取或创建共享浏览器"""
-    global _shared_browser, _shared_context
-    with _shared_lock:
-        if _shared_browser is None:
-            from playwright.sync_api import sync_playwright
-            _pw = sync_playwright().start()
-            args = {
-                "headless": True,
-                "args": [
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-dev-shm-usage", "--no-sandbox",
-                ],
-            }
-            try:
-                _shared_browser = _pw.chromium.launch(channel="chrome", **args)
-            except Exception:
-                _shared_browser = _pw.chromium.launch(**args)
-            _shared_context = _shared_browser.new_context(
-                locale="ja-JP", timezone_id="Asia/Tokyo",
-                extra_http_headers={"Accept-Language": "ja-JP,ja;q=0.9"},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36",
-            )
-            logger.info("共享浏览器已启动")
-    return _shared_context
-
-
-def close_shared_browser():
-    """关闭共享浏览器"""
-    global _shared_browser, _shared_context
-    with _shared_lock:
-        if _shared_browser:
-            _shared_browser.close()
-            _shared_browser = None
-            _shared_context = None
-            logger.info("共享浏览器已关闭")
 
 
 def _get_usd_jpy_rate():
@@ -139,104 +96,135 @@ def _search_via_mercari_lib(keyword, max_results, proxy):
 
 
 def _search_via_playwright(keyword, max_results, proxy):
-    """Tier 3: Playwright 浏览器渲染（复用共享实例）"""
-    search_url = f"https://jp.mercari.com/search?keyword={keyword.replace(' ', '+')}&status=on_sale"
+    """Tier 3: Playwright 浏览器渲染"""
+    from playwright.sync_api import sync_playwright
 
-    context = _get_shared_browser()
-    if proxy and proxy.startswith("http"):
-        context = context.browser.new_context(
-            locale="ja-JP", timezone_id="Asia/Tokyo",
-            proxy={"server": proxy},
-            extra_http_headers={"Accept-Language": "ja-JP,ja;q=0.9"},
-        )
-    page = context.new_page()
+    search_url = "https://jp.mercari.com/search?keyword={}&status=on_sale".format(
+        keyword.replace(" ", "+")
+    )
     items = []
 
-    try:
-        page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
-
-        # 等待骨架屏消失
+    with sync_playwright() as p:
+        launch_args = {
+            "headless": True,
+            "args": [
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+            ],
+        }
         try:
-            page.wait_for_selector("li[data-testid='item-cell-skeleton']", state="detached", timeout=15000)
+            browser = p.chromium.launch(channel="chrome", **launch_args)
         except Exception:
-            page.wait_for_timeout(5000)
+            browser = p.chromium.launch(**launch_args)
 
-        # 提取商品链接
-        html = page.content()
-        links = _re.findall(r'href="(/item/m\d+)"', html)
-        seen_ids = set()
-
-        for link in links:
-            if len(items) >= max_results:
-                break
-
-            item_id = link.split("/item/")[-1]
-            if item_id in seen_ids:
-                continue
-            seen_ids.add(item_id)
-
-            full_url = f"https://jp.mercari.com{link}"
-
-            # 提取图片、名称、价格
-            try:
-                name_el = page.query_selector(f"a[href='{link}']")
-                if name_el:
-                    info_json = name_el.evaluate("""el => {
-                        let card = el.closest('li');
-                        if (!card) return '{}';
-                        let img = card.querySelector('img');
-                        let imgSrc = img ? (img.src || '') : '';
-                        let nameEl = card.querySelector('[class*="itemName"]');
-                        let name = nameEl ? nameEl.innerText.trim() : '';
-                        let curEl = card.querySelector('[class*="currency"]');
-                        let numEl = card.querySelector('[class*="number"]');
-                        let currency = curEl ? curEl.innerText.trim() : '';
-                        let number = numEl ? numEl.innerText.trim() : '';
-                        return JSON.stringify({img: imgSrc, name: name, currency: currency, number: number});
-                    }""")
-                    import json as _json
-                    try:
-                        info = _json.loads(info_json)
-                        img_src = info.get("img", "")
-                        name = info.get("name", "")
-                        currency = info.get("currency", "")
-                        number_str = info.get("number", "")
-                    except Exception:
-                        img_src = ""
-                        name = ""
-                        currency = ""
-                        number_str = ""
-
-                    price = 0
-                    if number_str:
-                        try:
-                            val = float(number_str.replace(",", ""))
-                            if currency == "US$":
-                                val = int(val * _get_usd_jpy_rate())
-                            elif currency == "HK$":
-                                val = int(val * 20)
-                            elif "." in number_str:
-                                val = int(val * 20)
-                            price = int(val)
-                        except ValueError:
-                            pass
-
-                    items.append({
-                        "item_id": item_id, "name": name or f"Mercari {item_id}",
-                        "price": price, "url": full_url, "image_url": img_src,
-                    })
-            except Exception:
-                items.append({
-                    "item_id": item_id, "name": f"Mercari {item_id}",
-                    "price": 0, "url": full_url, "image_url": "",
-                })
-
-    except Exception as e:
-        logger.error(f"Playwright搜索出错: {e}")
-    finally:
-        page.close()
+        context_args = {
+            "locale": "ja-JP",
+            "timezone_id": "Asia/Tokyo",
+            "extra_http_headers": {"Accept-Language": "ja-JP,ja;q=0.9"},
+            "user_agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36"
+            ),
+        }
         if proxy and proxy.startswith("http"):
-            context.close()
+            context_args["proxy"] = {"server": proxy}
+
+        context = browser.new_context(**context_args)
+        page = context.new_page()
+
+        try:
+            page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+
+            # 等待骨架屏消失（最多等15秒，超时加5秒）
+            try:
+                page.wait_for_selector(
+                    "li[data-testid='item-cell-skeleton']",
+                    state="detached",
+                    timeout=15000,
+                )
+            except Exception:
+                page.wait_for_timeout(5000)
+
+            # 从HTML提取商品链接
+            html = page.content()
+            links = _re.findall(r'href="(/item/m\d+)"', html)
+            seen_ids = set()
+
+            for link in links:
+                if len(items) >= max_results:
+                    break
+
+                item_id = link.split("/item/")[-1]
+                if item_id in seen_ids:
+                    continue
+                seen_ids.add(item_id)
+
+                full_url = "https://jp.mercari.com" + link
+
+                # 提取图片、名称、价格（精确class选择器）
+                try:
+                    name_el = page.query_selector("a[href='{}']".format(link))
+                    if name_el:
+                        info_json = name_el.evaluate("""el => {
+                            let card = el.closest('li');
+                            if (!card) return '{}';
+                            let img = card.querySelector('img');
+                            let imgSrc = img ? (img.src || '') : '';
+                            let nameEl = card.querySelector('[class*="itemName"]');
+                            let name = nameEl ? nameEl.innerText.trim() : '';
+                            let curEl = card.querySelector('[class*="currency"]');
+                            let numEl = card.querySelector('[class*="number"]');
+                            let currency = curEl ? curEl.innerText.trim() : '';
+                            let number = numEl ? numEl.innerText.trim() : '';
+                            return JSON.stringify({img: imgSrc, name: name,
+                                currency: currency, number: number});
+                        }""")
+                        import json as _json
+                        try:
+                            info = _json.loads(info_json)
+                            img_src = info.get("img", "")
+                            name = info.get("name", "")
+                            currency = info.get("currency", "")
+                            number_str = info.get("number", "")
+                        except Exception:
+                            img_src, name, currency, number_str = "", "", "", ""
+
+                        # 解析价格
+                        price = 0
+                        if number_str:
+                            try:
+                                val = float(number_str.replace(",", ""))
+                                if currency == "US$":
+                                    val = int(val * _get_usd_jpy_rate())
+                                elif currency == "HK$":
+                                    val = int(val * 20)
+                                elif "." in number_str:
+                                    val = int(val * 20)
+                                price = int(val)
+                            except ValueError:
+                                pass
+
+                        items.append({
+                            "item_id": item_id,
+                            "name": name or "Mercari " + item_id,
+                            "price": price,
+                            "url": full_url,
+                            "image_url": img_src,
+                        })
+                except Exception:
+                    items.append({
+                        "item_id": item_id,
+                        "name": "Mercari " + item_id,
+                        "price": 0,
+                        "url": full_url,
+                        "image_url": "",
+                    })
+
+        except Exception as e:
+            logger.error("Playwright搜索出错: {}".format(e))
+
+        browser.close()
 
     return items
 
