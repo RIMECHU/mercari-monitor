@@ -11,13 +11,41 @@ logger = logging.getLogger(__name__)
 
 SERVERCHAN_API = "https://sctapi.ftqq.com"
 
+_jpy_to_cny_rate = 0.048  # 默认 1 JPY ≈ 0.048 CNY
+
+
+def _get_jpy_cny_rate():
+    """获取实时 JPY→CNY 汇率"""
+    global _jpy_to_cny_rate
+    try:
+        r = requests.get(
+            "https://api.exchangerate-api.com/v4/latest/JPY",
+            timeout=5,
+        )
+        if r.status_code == 200:
+            _jpy_to_cny_rate = r.json()["rates"]["CNY"]
+            logger.info(f"实时汇率: 1 JPY = {_jpy_to_cny_rate} CNY")
+    except Exception:
+        pass
+    return _jpy_to_cny_rate
+
+
+def _jpy_to_cny(jpy_amount):
+    """日元转人民币"""
+    rate = _get_jpy_cny_rate()
+    return round(jpy_amount * rate)
+
 
 def send_price_alert(sendkey, keyword, target_price, item_name, item_price, item_url, image_url=""):
     """
     发送降价提醒到微信
     返回: True=成功, False=失败
     """
+    target_cny = _jpy_to_cny(target_price)
+    item_cny = _jpy_to_cny(item_price)
     diff = target_price - item_price
+    diff_cny = _jpy_to_cny(abs(diff))
+
     title = f"🔻 降价提醒: {keyword}"
 
     # 构建Markdown消息内容
@@ -25,8 +53,9 @@ def send_price_alert(sendkey, keyword, target_price, item_name, item_price, item
         f"## 降价提醒",
         f"",
         f"- **监控关键词**: {keyword}",
-        f"- **目标价格**: ¥{target_price:,}",
-        f"- **当前价格**: ¥{item_price:,} (低于目标 ¥{diff:,})",
+        f"- **目标价格**: ¥{target_price:,} (约 ¥{target_cny:,} CNY)",
+        f"- **当前价格**: ¥{item_price:,} (约 ¥{item_cny:,} CNY)",
+        f"- **低于目标**: ¥{diff:,} (约 ¥{diff_cny:,} CNY)",
         f"- **商品名称**: [{item_name}]({item_url})",
         f"- **商品链接**: {item_url}",
         f"",
@@ -51,7 +80,7 @@ def send_price_alert(sendkey, keyword, target_price, item_name, item_price, item
         )
         result = resp.json()
         if result.get("code") == 0:
-            logger.info(f"推送成功: {item_name} - ¥{item_price}")
+            logger.info(f"推送成功: {item_name} - ¥{item_price} (¥{item_cny} CNY)")
             return True
         else:
             logger.warning(f"Server酱返回错误: {result}")
