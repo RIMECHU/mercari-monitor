@@ -1,0 +1,5 @@
+*.db
+*.log
+config.json
+__pycache__/
+*.pyc

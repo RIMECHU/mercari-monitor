@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: mercari-monitor
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: DEPLOY=cloud python app.py
+    envVars:
+      - key: PYTHONIOENCODING
+        value: utf-8
+      - key: DEPLOY
+        value: cloud
