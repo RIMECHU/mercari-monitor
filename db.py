@@ -8,16 +8,20 @@ DB_FILE = os.path.join(os.path.dirname(__file__), 'mercari_monitor.db')
 
 
 def get_db():
-    """获取数据库连接"""
-    conn = sqlite3.connect(DB_FILE)
+    """获取数据库连接（线程安全，支持并发写入）"""
+    conn = sqlite3.connect(DB_FILE, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")      # 读写并发优化
+    conn.execute("PRAGMA busy_timeout = 5000")      # 锁等待5秒
     return conn
 
 
 def init_db():
     """初始化数据库表结构"""
     conn = get_db()
+    # 开启WAL模式以支持多线程并发
+    conn.execute("PRAGMA journal_mode = WAL")
     cursor = conn.cursor()
 
     cursor.execute('''
