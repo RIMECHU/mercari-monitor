@@ -6,6 +6,26 @@ import time
 
 logger = logging.getLogger(__name__)
 
+# 实时汇率缓存
+_usd_to_jpy_rate = 150  # 默认值，首次启动时获取
+
+
+def _get_usd_jpy_rate():
+    """获取实时 USD→JPY 汇率"""
+    global _usd_to_jpy_rate
+    try:
+        import httpx as _httpx
+        r = _httpx.get(
+            "https://api.exchangerate-api.com/v4/latest/USD",
+            timeout=5,
+        )
+        if r.status_code == 200:
+            _usd_to_jpy_rate = int(r.json()["rates"]["JPY"])
+            logger.info(f"实时汇率: 1 USD = {_usd_to_jpy_rate} JPY")
+    except Exception:
+        pass
+    return _usd_to_jpy_rate
+
 
 def search_mercari(keyword, max_results=10, proxy=None):
     """
@@ -192,17 +212,18 @@ def _search_via_api(keyword, max_results, proxy):
                             currency = ""
                             number_str = ""
 
-                        # 解析价格：外币按汇率换算为日元
+                        # 解析价格：外币按实时汇率换算为日元
                         price = 0
                         if number_str:
                             try:
                                 val = float(number_str.replace(",", ""))
                                 if currency == "US$":
-                                    val = int(val * 150)   # USD → JPY
+                                    rate = _get_usd_jpy_rate()
+                                    val = int(val * rate)    # USD→JPY 实时汇率
                                 elif currency == "HK$":
-                                    val = int(val * 20)    # HKD → JPY
+                                    val = int(val * 20)      # HKD→JPY
                                 elif "." in number_str:
-                                    val = int(val * 20)    # 有小数点=外币
+                                    val = int(val * 20)      # 默认外币换算
                                 price = int(val)
                             except ValueError:
                                 pass
