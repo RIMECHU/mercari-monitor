@@ -114,6 +114,10 @@ def _search_via_api(keyword, max_results, proxy):
 
         context_args = {
             "locale": "ja-JP",
+            "timezone_id": "Asia/Tokyo",
+            "extra_http_headers": {
+                "Accept-Language": "ja-JP,ja;q=0.9",
+            },
             "user_agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -196,15 +200,19 @@ def _search_via_api(keyword, max_results, proxy):
                         # 清洗名称：移除前导的货币/价格行 (如 "HK$\n176.49\n")
                         name = _re.sub(r'^.*[¥￥HK\$\d,\.]+\s*[\d,\.]+\s*', '', name).strip()
 
-                        # 从价格文本中提取数字 (支持 HK$176.49 和 ¥3,490 格式)
+                        # 从价格文本中提取数字
+                        # Mercari日本标准价格: ¥12,345 (整数，无小数点)
+                        # 如果Chrome区域检测为香港则显示HK$789.00 (浮点数)
                         price = 0
                         if price_text:
-                            digits = _re.findall(r'[\d,]+\.?\d*', price_text.replace(",", ""))
-                            for d in digits:
+                            # 提取所有数字 (包括小数点)
+                            all_numbers = _re.findall(r'[\d,]+\.?\d*', price_text.replace(",", ""))
+                            for d in all_numbers:
                                 try:
                                     val = float(d)
                                     if val > 1:
-                                        if "HK" in price_text or "HK$" in price_text:
+                                        # 小数点 = 外币价格，估算换算 (HKD→JPY ≈ ×20)
+                                        if "." in d:
                                             val = int(val * 20)
                                         price = int(val)
                                         break
