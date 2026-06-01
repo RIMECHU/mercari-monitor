@@ -161,7 +161,7 @@ def _search_via_api(keyword, max_results, proxy):
 
                 full_url = f"https://jp.mercari.com{link}"
 
-                # 尝试从DOM获取图片、名称和价格
+                # 从DOM提取图片、名称、价格（精确class选择器）
                 try:
                     name_el = page.query_selector(f"a[href='{link}']")
                     if name_el:
@@ -169,55 +169,43 @@ def _search_via_api(keyword, max_results, proxy):
                             let card = el.closest('li');
                             if (!card) return '{}';
                             let img = card.querySelector('img');
-                            let imgSrc = img ? (img.src || img.getAttribute('data-src') || '') : '';
-                            let priceEl = card.querySelector('[class*="price"]') ||
-                                         card.querySelector('[class*="Price"]') ||
-                                         card.querySelector('[class*="amount"]');
-                            let priceText = priceEl ? priceEl.innerText : '';
-                            if (!priceText) {
-                                let lines = card.innerText.split('\\n');
-                                for (let l of lines) {
-                                    if (l.match(/[¥￥HK$]\\s*[\\d,]+/)) { priceText = l; break; }
-                                }
-                            }
-                            let nameEl = card.querySelector('[class*="title"]') ||
-                                        card.querySelector('[class*="name"]') ||
-                                        card.querySelector('h3, h2');
-                            let name = nameEl ? nameEl.innerText : el.innerText;
-                            return JSON.stringify({img: imgSrc, name: name.trim(), price: priceText.trim()});
+                            let imgSrc = img ? (img.src || '') : '';
+                            // 精确class: itemName__ 名称, currency__ 货币, number__ 金额
+                            let nameEl = card.querySelector('[class*="itemName"]');
+                            let name = nameEl ? nameEl.innerText.trim() : '';
+                            let curEl = card.querySelector('[class*="currency"]');
+                            let numEl = card.querySelector('[class*="number"]');
+                            let currency = curEl ? curEl.innerText.trim() : '';
+                            let number = numEl ? numEl.innerText.trim() : '';
+                            return JSON.stringify({img: imgSrc, name: name, currency: currency, number: number});
                         }""")
                         import json as _json
                         try:
                             info = _json.loads(info_json)
                             img_src = info.get("img", "")
                             name = info.get("name", "")
-                            price_text = info.get("price", "")
+                            currency = info.get("currency", "")
+                            number_str = info.get("number", "")
                         except Exception:
                             img_src = ""
                             name = ""
-                            price_text = ""
+                            currency = ""
+                            number_str = ""
 
-                        # 清洗名称：移除前导的货币/价格行 (如 "HK$\n176.49\n")
-                        name = _re.sub(r'^.*[¥￥HK\$\d,\.]+\s*[\d,\.]+\s*', '', name).strip()
-
-                        # 从价格文本中提取数字
-                        # Mercari日本标准价格: ¥12,345 (整数，无小数点)
-                        # 如果Chrome区域检测为香港则显示HK$789.00 (浮点数)
+                        # 解析价格：外币按汇率换算为日元
                         price = 0
-                        if price_text:
-                            # 提取所有数字 (包括小数点)
-                            all_numbers = _re.findall(r'[\d,]+\.?\d*', price_text.replace(",", ""))
-                            for d in all_numbers:
-                                try:
-                                    val = float(d)
-                                    if val > 1:
-                                        # 小数点 = 外币价格，估算换算 (HKD→JPY ≈ ×20)
-                                        if "." in d:
-                                            val = int(val * 20)
-                                        price = int(val)
-                                        break
-                                except ValueError:
-                                    continue
+                        if number_str:
+                            try:
+                                val = float(number_str.replace(",", ""))
+                                if currency == "US$":
+                                    val = int(val * 150)   # USD → JPY
+                                elif currency == "HK$":
+                                    val = int(val * 20)    # HKD → JPY
+                                elif "." in number_str:
+                                    val = int(val * 20)    # 有小数点=外币
+                                price = int(val)
+                            except ValueError:
+                                pass
 
                         items.append({
                             "item_id": item_id,
