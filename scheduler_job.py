@@ -69,7 +69,20 @@ def check_all_active_products():
 
         total_found += len(items)
 
+        # 过滤：只保留名称中包含关键词的商品
+        keyword_parts = [k.lower() for k in keyword.split() if len(k) >= 2]
+        filtered_items = []
         for item in items:
+            item_name_lower = item["name"].lower()
+            # 所有关键词片段都必须出现在商品名中
+            if all(part in item_name_lower for part in keyword_parts):
+                filtered_items.append(item)
+            else:
+                logger.debug(f"  过滤: '{item['name'][:40]}' 不包含所有关键词")
+
+        logger.info(f"  [{pid}] 搜索到 {len(items)} 个, 关键词匹配 {len(filtered_items)} 个")
+
+        for item in filtered_items:
             # 保存价格记录
             record_id = add_price_record(
                 pid,
@@ -124,10 +137,15 @@ def check_single_product(product_id):
     source = product.get("source", "mercari")
     items = _search_source(source, product["keyword"], max_results, proxy)
 
+    # 过滤：只保留名称中包含关键词的商品
+    keyword = product["keyword"]
+    keyword_parts = [k.lower() for k in keyword.split() if len(k) >= 2]
+    filtered_items = [i for i in items if all(p in i["name"].lower() for p in keyword_parts)]
+
     found = 0
     alerts = 0
 
-    for item in items:
+    for item in filtered_items:
         record_id = add_price_record(
             product_id,
             item["item_id"],
