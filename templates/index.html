@@ -579,24 +579,26 @@ async function saveSettings() {
 
 async function testNotification() {
   const sendkey = $('#setSendkey').value.trim();
-  if (!sendkey || sendkey.includes('****')) {
-    showToast('请先输入完整的SendKey', 'error');
-    return;
-  }
 
-  try {
-    // 先保存SendKey再进行测试
-    const saveResult = await API('/api/config', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sendkey }),
-    });
-    if (saveResult.error) {
-      showToast('保存SendKey失败: ' + saveResult.error, 'error');
+  // 如果SendKey被脱敏(含****)说明已保存过，直接用服务器存的key测试
+  if (sendkey && !sendkey.includes('****')) {
+    // 用户输入了新key，先保存
+    try {
+      const saveResult = await API('/api/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sendkey }),
+      });
+      if (saveResult.error) {
+        showToast('保存SendKey失败: ' + saveResult.error, 'error');
+        return;
+      }
+    } catch (e) {
+      showToast('无法连接到服务器，请确认服务已启动', 'error');
       return;
     }
-  } catch (e) {
-    showToast('无法连接到服务器，请确认服务已启动 (localhost:5000)', 'error');
+  } else if (!sendkey) {
+    showToast('请输入SendKey', 'error');
     return;
   }
 
